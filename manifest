@@ -1,5 +1,5 @@
 appname               = PixelIdle
-version               = 1.0.2
+version               = 1.1.0
 display_name          = 像素放置
 desc                  = 一款像素风放置挂机游戏：自动战斗、升级成长、离线收益。打开即玩，进度按用户自动保存。
 source                = thirdparty
@@ -20,4 +20,4 @@ checkport             = false
 
 disable_authorization_path = true
 
-changelog             = 引入热更新开发流程、版本号自动递增与升级存档备份
+changelog             = 架构重构：服务定位器+事件总线、数值集中 TUNE、敌人出手预警、打击感强化
