@@ -1,0 +1,16 @@
+#!/bin/bash
+# 升级后：确认存档仍在，若被覆盖则从备份恢复
+set -u
+VAR_DIR="${TRIM_PKGVAR:-/vol1/@appdata/PixelIdle}"
+BACKUP_DIR="${VAR_DIR}/backup-${TRIM_OLD_APPVER:-old}"
+
+if [ -d "${BACKUP_DIR}" ]; then
+  for f in "${BACKUP_DIR}"/save-*.json; do
+    [ -f "$f" ] || continue
+    base="$(basename "$f")"
+    if [ ! -f "${VAR_DIR}/${base}" ]; then
+      cp -f "$f" "${VAR_DIR}/${base}" 2>/dev/null || true
+    fi
+  done
+fi
+exit 0

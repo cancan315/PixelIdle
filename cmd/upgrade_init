@@ -1,0 +1,12 @@
+#!/bin/bash
+# 升级前：备份存档，避免版本升级丢失进度
+set -u
+VAR_DIR="${TRIM_PKGVAR:-/vol1/@appdata/PixelIdle}"
+BACKUP_DIR="${VAR_DIR}/backup-${TRIM_OLD_APPVER:-old}"
+
+if ls "${VAR_DIR}"/save-*.json >/dev/null 2>&1; then
+  mkdir -p "${BACKUP_DIR}" 2>/dev/null
+  cp -f "${VAR_DIR}"/save-*.json "${BACKUP_DIR}/" 2>/dev/null || true
+  echo "已备份存档到 ${BACKUP_DIR}"
+fi
+exit 0

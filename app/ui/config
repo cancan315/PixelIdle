@@ -1,0 +1,14 @@
+{
+    ".url": {
+        "PixelIdle.Application": {
+            "title": "像素放置",
+            "icon": "images/icon_{0}.png",
+            "type": "iframe",
+            "protocol": "",
+            "gatewayPrefix": "/app/PixelIdle",
+            "gatewaySocket": "app.sock",
+            "url": "/app/PixelIdle",
+            "allUsers": true
+        }
+    }
+}

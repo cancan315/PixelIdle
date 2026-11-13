@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>像素放置 · Pixel Idle</title>
+<style>
+  :root{
+    --bg:#14141f;
+    --panel:#1e2030;
+    --panel-2:#262a3f;
+    --line:#363b58;
+    --text:#e6e8f4;
+    --muted:#8a90b0;
+    --gold:#ffcc4d;
+    --hp:#e5484d;
+    --mp:#4d9eff;
+    --xp:#4ade80;
+    --radius:10px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--bg);
+    color:var(--text);
+    font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+    font-size:14px;
+    overflow:hidden;
+    -webkit-user-select:none;user-select:none;
+    -webkit-tap-highlight-color:transparent;
+  }
+
+  /* ---------- layout ---------- */
+  #app{
+    display:grid;
+    grid-template-columns:1fr 340px;
+    height:100vh;
+  }
+  #left{
+    position:relative;
+    display:flex;
+    flex-direction:column;
+    min-width:0;
+    background:radial-gradient(circle at 50% 30%, #1c2036 0%, #101020 70%);
+  }
+  #stage-wrap{
+    position:relative;
+    flex:1;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    overflow:hidden;
+    min-height:0;
+  }
+  #stage{
+    display:block;
+    image-rendering:pixelated;
+    image-rendering:crisp-edges;
+    touch-action:manipulation;
+    cursor:pointer;
+  }
+
+  /* ---------- right panel ---------- */
+  #right{
+    background:var(--panel);
+    border-left:1px solid var(--line);
+    display:flex;
+    flex-direction:column;
+    min-height:0;
+  }
+  .hero-card{
+    padding:12px 14px;
+    border-bottom:1px solid var(--line);
+    background:linear-gradient(180deg,#252940,#1e2030);
+  }
+  .hero-top{display:flex;align-items:center;gap:10px}
+  .hero-avatar{
+    width:44px;height:44px;
+    border-radius:8px;
+    background:#2f3450;
+    border:2px solid #454b70;
+    image-rendering:pixelated;
+    flex:none;
+  }
+  .hero-name{font-weight:700;font-size:15px;letter-spacing:.5px}
+  .hero-lv{color:var(--gold);font-size:12px;margin-top:2px}
+
+  .bar{
+    position:relative;
+    height:16px;
+    border-radius:8px;
+    background:#12131e;
+    overflow:hidden;
+    margin-top:7px;
+    border:1px solid #2b2f47;
+  }
+  .bar > .fill{
+    height:100%;
+    width:0%;
+    border-radius:8px 0 0 8px;
+    transition:width .18s linear;
+  }
+  .bar > .txt{
+    position:absolute;inset:0;
+    display:flex;align-items:center;justify-content:center;
+    font-size:10px;font-weight:700;
+    text-shadow:0 1px 2px #000;
+    font-variant-numeric:tabular-nums;
+  }
+  #hpFill{background:linear-gradient(180deg,#ff6b6f,#c23438)}
+  #xpFill{background:linear-gradient(180deg,#5be89a,#28a55e)}
+
+  /* ---------- tabs ---------- */
+  #tabs{
+    display:flex;
+    border-bottom:1px solid var(--line);
+    background:#1a1c2b;
+  }
+  .tab{
+    flex:1;
+    padding:9px 0;
+    text-align:center;
+    font-size:13px;
+    color:var(--muted);
+    cursor:pointer;
+    border-bottom:2px solid transparent;
+    background:none;border:none;font-family:inherit;
+  }
+  .tab.active{color:var(--text);border-bottom-color:var(--gold);background:#22263a}
+  #tabBody{
+    flex:1;
+    overflow-y:auto;
+    padding:12px;
+    min-height:0;
+  }
+  #tabBody::-webkit-scrollbar{width:8px}
+  #tabBody::-webkit-scrollbar-thumb{background:#3a3f5e;border-radius:4px}
+
+  /* ---------- list items ---------- */
+  .row{
+    display:flex;align-items:center;gap:10px;
+    padding:9px 10px;
+    background:var(--panel-2);
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    margin-bottom:8px;
+  }
+  .row .info{flex:1;min-width:0}
+  .row .nm{font-size:13px;font-weight:600}
+  .row .sub{font-size:11px;color:var(--muted);margin-top:2px}
+  .icon{
+    width:30px;height:30px;flex:none;
+    display:grid;place-items:center;
+    font-size:16px;
+    border-radius:7px;
+    background:#151728;
+    border:1px solid #333852;
+  }
+
+  button.btn{
+    font-family:inherit;
+    font-size:12px;
+    font-weight:600;
+    color:#14141f;
+    background:linear-gradient(180deg,#ffd76b,#e8a92c);
+    border:none;
+    border-radius:7px;
+    padding:7px 13px;
+    cursor:pointer;
+    white-space:nowrap;
+    transition:filter .12s, transform .08s;
+  }
+  button.btn:hover{filter:brightness(1.1)}
+  button.btn:active{transform:scale(.96)}
+  button.btn:disabled{
+    background:#333852;color:#6a7090;cursor:not-allowed;
+    filter:none;transform:none;
+  }
+  button.btn.ghost{
+    background:transparent;
+    border:1px solid var(--line);
+    color:var(--muted);
+  }
+  button.btn.ghost:hover{color:var(--text);border-color:#4b5178}
+
+  /* ---------- HUD overlay ---------- */
+  #hud{
+    position:absolute;
+    top:10px;left:10px;right:10px;
+    display:flex;justify-content:space-between;
+    pointer-events:none;
+    font-size:12px;
+  }
+  .hud-chip{
+    background:rgba(12,13,22,.72);
+    border:1px solid #2f3450;
+    border-radius:8px;
+    padding:5px 10px;
+    backdrop-filter:blur(4px);
+    font-variant-numeric:tabular-nums;
+  }
+  .hud-chip b{color:var(--gold)}
+
+  #kills{
+    position:absolute;
+    bottom:10px;left:10px;
+    font-size:11px;color:var(--muted);
+    background:rgba(12,13,22,.6);
+    padding:4px 9px;border-radius:6px;
+  }
+
+  /* ---------- toast ---------- */
+  #toasts{
+    position:absolute;
+    top:52px;left:50%;
+    transform:translateX(-50%);
+    display:flex;flex-direction:column;
+    align-items:center;gap:6px;
+    pointer-events:none;
+    z-index:20;
+  }
+  .toast{
+    background:rgba(20,22,35,.94);
+    border:1px solid var(--gold);
+    color:var(--gold);
+    font-size:12px;font-weight:600;
+    padding:6px 14px;
+    border-radius:20px;
+    animation:toastIn .25s ease-out;
+    white-space:nowrap;
+  }
+  @keyframes toastIn{
+    from{opacity:0;transform:translateY(-8px) scale(.94)}
+    to{opacity:1;transform:none}
+  }
+
+  /* float text on canvas handled in JS */
+
+  /* ---------- offline dialog ---------- */
+  #offline{
+    position:fixed;inset:0;
+    background:rgba(6,7,12,.82);
+    display:none;
+    place-items:center;
+    z-index:100;
+    padding:20px;
+  }
+  #offline.show{display:grid}
+  .dialog{
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:14px;
+    padding:22px 24px;
+    max-width:360px;
+    width:100%;
+    text-align:center;
+    box-shadow:0 20px 60px rgba(0,0,0,.6);
+  }
+  .dialog h2{font-size:17px;margin-bottom:8px}
+  .dialog p{color:var(--muted);font-size:13px;line-height:1.7;margin-bottom:16px}
+  .dialog .gain{color:var(--gold);font-weight:700}
+
+  /* ---------- responsive ---------- */
+  @media (max-width:820px){
+    #app{grid-template-columns:1fr;grid-template-rows:1fr auto}
+    #right{
+      border-left:none;
+      border-top:1px solid var(--line);
+      max-height:44vh;
+    }
+    #tabBody{padding:10px}
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <section id="left">
+    <div id="stage-wrap">
+      <canvas id="stage" width="320" height="180"></canvas>
+      <div id="hud">
+        <div class="hud-chip">金币 <b id="hudGold">0</b></div>
+        <div class="hud-chip">第 <b id="hudStage">1</b> 关</div>
+      </div>
+      <div id="kills">已击杀 <span id="hudKills">0</span></div>
+      <div id="toasts"></div>
+    </div>
+  </section>
+
+  <aside id="right">
+    <div class="hero-card">
+      <div class="hero-top">
+        <canvas class="hero-avatar" id="avatar" width="16" height="16"></canvas>
+        <div style="flex:1;min-width:0">
+          <div class="hero-name" id="heroName">勇者</div>
+          <div class="hero-lv">Lv.<span id="heroLv">1</span> · 攻击力 <span id="heroAtk">5</span></div>
+        </div>
+      </div>
+      <div class="bar"><div class="fill" id="hpFill"></div><div class="txt" id="hpTxt">100 / 100</div></div>
+      <div class="bar"><div class="fill" id="xpFill"></div><div class="txt" id="xpTxt">0 / 10</div></div>
+    </div>
+
+    <div id="tabs">
+      <button class="tab active" data-tab="hero">英雄</button>
+      <button class="tab" data-tab="gear">装备</button>
+      <button class="tab" data-tab="skill">技能</button>
+      <button class="tab" data-tab="setting">设置</button>
+    </div>
+    <div id="tabBody"></div>
+  </aside>
+</div>
+
+<div id="offline">
+  <div class="dialog">
+    <h2>欢迎回来</h2>
+    <p>你离开了 <span class="gain" id="offTime">0 秒</span><br/>离线期间自动战斗获得<br/><span class="gain" id="offGold">0 金币</span></p>
+    <button class="btn" id="offOk">收取奖励</button>
+  </div>
+</div>
+
+<script src="game.js"></script>
+</body>
+</html>

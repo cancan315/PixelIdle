@@ -1,0 +1,956 @@
+/* =========================================================
+   像素放置 · Pixel Idle
+   单文件 Canvas 放置游戏引擎（无外部依赖）
+   ========================================================= */
+(function () {
+  'use strict';
+
+  /* ---------------- 配置 ---------------- */
+  const SAVE_KEY = 'pixelidle.save.v1';
+  const W = 320, H = 180;          // 逻辑分辨率
+  const GROUND_Y = 132;            // 地面基准线
+  const PX = 2;                    // 每个逻辑像素放大倍数(用于精灵绘制)
+
+  /* ---------------- 调色板 ---------------- */
+  const PAL = {
+    skin:  '#f0c49a', skinDark: '#c99771',
+    hair:  '#3a2a2a',
+    cloth: '#4a6fdc', clothDark: '#33509f',
+    cape:  '#d94f4f',
+    metal: '#c8cede', metalDark: '#8b93a8',
+    blade: '#eef3ff',
+    gold:  '#ffcc4d',
+    slime: '#5ecf7a', slimeDark: '#389a52', slimeEye: '#10281a',
+    bat:   '#8a5ad4', batDark: '#5c3699', batWing: '#4a2b7a',
+    skel:  '#e8e6d8', skelDark: '#a8a597', skelEye: '#ff5b5b',
+    golem: '#9a8f7a', golemDark: '#6b6250', golemCore: '#5adcff',
+    shadow:'rgba(0,0,0,.28)'
+  };
+
+  /* ---------------- 精灵（字符串像素画） ---------------- */
+  /* 每个字符对应调色板一个颜色，“.” 为透明 */
+  const SPRITES = {
+    hero: {
+      pal: { k: PAL.hair, s: PAL.skin, c: PAL.cloth, d: PAL.clothDark, e: '#1a1a2a', m: PAL.metal },
+      art: [
+        '...kkkk...',
+        '..kkkkkk..',
+        '..kssssk..',
+        '..kesseek.',
+        '..kssssk..',
+        '...ssss...',
+        '..cccccc..',
+        '.mccccccm.',
+        '.mcddd dcm',
+        '..cccccc..',
+        '..dd..dd..',
+        '..dd..dd..',
+        '.kk....kk.'
+      ]
+    },
+    slime: {
+      pal: { g: PAL.slime, d: PAL.slimeDark, e: PAL.slimeEye, w: '#ffffff' },
+      art: [
+        '..........',
+        '..........',
+        '..........',
+        '....gg....',
+        '...gggg...',
+        '..gggggg..',
+        '.ggeggegg.',
+        '.gggggggg.',
+        '.gwwggwwg.',
+        '.dddddddd.'
+      ]
+    },
+    bat: {
+      pal: { b: PAL.bat, d: PAL.batDark, w: PAL.batWing, e: '#ffe14d' },
+      art: [
+        '..........',
+        '..w....w..',
+        '.www..www.',
+        '.wwbbbbww.',
+        '..bbbbbb..',
+        '..bebbeb..',
+        '...bbbb...',
+        '....dd....',
+        '..........',
+        '..........'
+      ]
+    },
+    skeleton: {
+      pal: { s: PAL.skel, d: PAL.skelDark, e: PAL.skelEye, k: '#2a2a35' },
+      art: [
+        '...ssss...',
+        '..ssssss..',
+        '..sessse..',
+        '..ssssss..',
+        '...ssss...',
+        '...kkkk...',
+        '..ssssss..',
+        '.ssssssss.',
+        '..s.ss.s..',
+        '..d.dd.d..',
+        '..d.dd.d..',
+        '.dd.dd.dd.'
+      ]
+    },
+    golem: {
+      pal: { g: PAL.golem, d: PAL.golemDark, c: PAL.golemCore },
+      art: [
+        '...gggg...',
+        '..gggggg..',
+        '..gccggg..',
+        '..gggggg..',
+        '.gggggggg.',
+        'ggggddgggg',
+        'gggggggggg',
+        'ggdggggdgg',
+        'ggdggggdgg',
+        '.dd....dd.',
+        '.dd....dd.',
+        '.dd....dd.'
+      ]
+    }
+  };
+
+  /* ---------------- 敌人定义 ---------------- */
+  const ENEMIES = {
+    slime:    { name: '史莱姆', sprite: 'slime',    hp: 20,   atk: 2,  xp: 6,   gold: 3,   speed: 8,  scale: 1.6 },
+    bat:      { name: '蝙蝠',   sprite: 'bat',      hp: 34,   atk: 4,  xp: 11,  gold: 6,   speed: 22, scale: 1.5 },
+    skeleton: { name: '骷髅',   sprite: 'skeleton', hp: 62,   atk: 7,  xp: 20,  gold: 12,  speed: 12, scale: 1.5 },
+    golem:    { name: '石魔',   sprite: 'golem',    hp: 120,  atk: 12, xp: 38,  gold: 26,  speed: 6,  scale: 1.7 }
+  };
+
+  /* 关卡：每 5 关循环一次敌人池，属性随关卡指数增长 */
+  function stageEnemy(stage) {
+    const pool = ['slime', 'slime', 'bat', 'bat', 'skeleton', 'golem'];
+    const key = pool[(stage - 1) % pool.length];
+    const base = ENEMIES[key];
+    const tier = Math.floor((stage - 1) / pool.length);
+    const mul = Math.pow(1.55, tier);
+    return {
+      key,
+      name: base.name,
+      sprite: base.sprite,
+      hp: Math.round(base.hp * mul),
+      atk: Math.round(base.atk * mul * 10) / 10,
+      xp: Math.round(base.xp * mul),
+      gold: Math.round(base.gold * mul),
+      speed: base.speed,
+      scale: base.scale
+    };
+  }
+
+  /* ---------------- 技能 ---------------- */
+  const SKILLS = [
+    { id: 'atk',   name: '力量训练', icon: '⚔️', baseCost: 25,  grow: 1.35, desc: '攻击力 +1',  apply: s => { s.atkBonus += 1; } },
+    { id: 'hp',    name: '体魄锻炼', icon: '❤️', baseCost: 30,  grow: 1.32, desc: '最大生命 +15', apply: s => { s.hpBonus += 15; } },
+    { id: 'speed', name: '疾风步',   icon: '💨', baseCost: 40,  grow: 1.42, desc: '攻速 +8%',   apply: s => { s.speedBonus += 0.08; } },
+    { id: 'crit',  name: '致命一击', icon: '🎯', baseCost: 60,  grow: 1.5,  desc: '暴击率 +3%', apply: s => { s.critBonus += 0.03; } },
+    { id: 'regen', name: '自然恢复', icon: '🌿', baseCost: 55,  grow: 1.4,  desc: '每秒回复 +0.5', apply: s => { s.regenBonus += 0.5; } }
+  ];
+
+  /* ---------------- 状态 ---------------- */
+  const S = {
+    hero: {
+      level: 1,
+      xp: 0,
+      hp: 100,
+      maxHp: 100,
+      atk: 5,
+      atkBonus: 0,
+      hpBonus: 0,
+      speedBonus: 0,
+      critBonus: 0,
+      regenBonus: 0
+    },
+    gold: 0,
+    stage: 1,
+    kills: 0,
+    skillLv: { atk: 0, hp: 0, speed: 0, crit: 0, regen: 0 },
+    // 战斗运行时
+    enemy: null,
+    heroAtkTimer: 0,
+    enemyAtkTimer: 0,
+    regenAcc: 0,
+    lastSave: Date.now(),
+    lastTick: Date.now()
+  };
+
+  /* 派生属性 */
+  function maxHp() { return 100 + S.hero.hpBonus + (S.hero.level - 1) * 20; }
+  function attack() { return 5 + S.hero.atkBonus + (S.hero.level - 1) * 2; }
+  function attackInterval() { return Math.max(0.16, 0.8 / (1 + S.hero.speedBonus)); }
+  function critChance() { return Math.min(0.75, 0.05 + S.hero.critBonus); }
+  function regenRate() { return 0.3 + S.hero.regenBonus; }
+  function xpToNext() { return Math.round(10 + Math.pow(S.hero.level, 1.75) * 6); }
+
+  /* ---------------- 存档 ---------------- */
+  /* 优先保存到服务端（多端同步），失败时降级到 localStorage */
+  /* 计算网关基址：页面可能挂在 /app/PixelIdle 或 /app/PixelIdle/，
+     用 pathname 推导可避免相对路径解析错误（否则会请求到 /app/api/save） */
+  function basePath() {
+    let p = location.pathname;
+    // 去掉末尾的 index.html
+    p = p.replace(/index\.html?$/i, '');
+    // 保证以 / 结尾
+    if (!p.endsWith('/')) p += '/';
+    return p;
+  }
+  const SAVE_API = basePath() + 'api/save';
+
+  function snapshot(now) {
+    return {
+      v: 1,
+      level: S.hero.level,
+      xp: S.hero.xp,
+      hp: S.hero.hp,
+      atkBonus: S.hero.atkBonus,
+      hpBonus: S.hero.hpBonus,
+      speedBonus: S.hero.speedBonus,
+      critBonus: S.hero.critBonus,
+      regenBonus: S.hero.regenBonus,
+      gold: S.gold,
+      stage: S.stage,
+      kills: S.kills,
+      skillLv: S.skillLv,
+      time: now || Date.now()
+    };
+  }
+
+  function saveLocal(data) {
+    try {
+      localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function save(now) {
+    const data = snapshot(now);
+    S.lastSave = data.time;
+    S.pendingSave = true;
+
+    // 本地先存一份，保证任何情况下都不丢进度
+    saveLocal(data);
+
+    // 再尝试同步到服务端
+    try {
+      fetch(SAVE_API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      }).then(() => { S.pendingSave = false; })
+        .catch(() => { S.pendingSave = false; });
+    } catch (e) {
+      S.pendingSave = false;
+    }
+
+    return true;
+  }
+
+  function normalizeSave(d) {
+    if (!d || typeof d !== 'object' || d.v !== 1) return null;
+    return d;
+  }
+
+  function loadLocal() {
+    try {
+      return normalizeSave(JSON.parse(localStorage.getItem(SAVE_KEY) || 'null'));
+    } catch (e) {
+      return null;
+    }
+  }
+
+  async function load() {
+    // 优先读服务端存档
+    try {
+      const res = await fetch(SAVE_API, { headers: { 'Accept': 'application/json' } });
+      if (res.ok) {
+        const d = normalizeSave(await res.json());
+        if (d) return d;
+      }
+    } catch (e) {
+      // 服务端不可用，走本地
+    }
+    return loadLocal();
+  }
+
+  /* ---------------- 画布 ---------------- */
+  const canvas = document.getElementById('stage');
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+
+  /* 适配容器，保持宽高比 */
+  function fitCanvas() {
+    const wrap = document.getElementById('stage-wrap');
+    const cw = wrap.clientWidth, ch = wrap.clientHeight;
+    if (!cw || !ch) return;
+    const scale = Math.min(cw / W, ch / H);
+    canvas.style.width = Math.floor(W * scale) + 'px';
+    canvas.style.height = Math.floor(H * scale) + 'px';
+  }
+  window.addEventListener('resize', fitCanvas);
+
+  /* 把字符串精灵画成 ImageData 缓存 */
+  const spriteCache = {};
+  function buildSprite(name) {
+    if (spriteCache[name]) return spriteCache[name];
+    const def = SPRITES[name];
+    const rows = def.art;
+    const h = rows.length;
+    const w = Math.max(...rows.map(r => r.length));
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const g = c.getContext('2d');
+    const img = g.createImageData(w, h);
+    const colCache = {};
+    function rgba(hex) {
+      if (colCache[hex]) return colCache[hex];
+      const n = parseInt(hex.slice(1), 16);
+      const v = [(n >> 16) & 255, (n >> 8) & 255, n & 255, 255];
+      colCache[hex] = v;
+      return v;
+    }
+    for (let y = 0; y < h; y++) {
+      const row = rows[y];
+      for (let x = 0; x < w; x++) {
+        const ch = row[x];
+        if (!ch || ch === '.' || ch === ' ') continue;
+        const hex = def.pal[ch];
+        if (!hex) continue;
+        const [r, gg, b, a] = rgba(hex);
+        const i = (y * w + x) * 4;
+        img.data[i] = r; img.data[i + 1] = gg; img.data[i + 2] = b; img.data[i + 3] = a;
+      }
+    }
+    g.putImageData(img, 0, 0);
+    spriteCache[name] = { canvas: c, w, h };
+    return spriteCache[name];
+  }
+
+  function drawSprite(name, x, y, scale, flip) {
+    const sp = buildSprite(name);
+    ctx.save();
+    ctx.translate(Math.round(x), Math.round(y));
+    if (flip) ctx.scale(-1, 1);
+    ctx.scale(scale, scale);
+    ctx.drawImage(sp.canvas, flip ? -sp.w : 0, 0);
+    ctx.restore();
+  }
+
+  /* ---------------- 背景 ---------------- */
+  const stars = [];
+  for (let i = 0; i < 46; i++) {
+    stars.push({
+      x: Math.random() * W,
+      y: Math.random() * 80,
+      r: Math.random() < 0.75 ? 0.5 : 1,
+      p: Math.random() * Math.PI * 2
+    });
+  }
+
+  function drawBackground(t) {
+    // 天空渐变
+    const sky = ctx.createLinearGradient(0, 0, 0, H);
+    sky.addColorStop(0, '#0d0f1e');
+    sky.addColorStop(0.55, '#1b1f3a');
+    sky.addColorStop(1, '#2a2450');
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, W, H);
+
+    // 星星闪烁
+    for (const s of stars) {
+      const a = 0.35 + 0.45 * Math.sin(t * 1.4 + s.p);
+      ctx.fillStyle = 'rgba(200,215,255,' + a.toFixed(3) + ')';
+      ctx.fillRect(s.x, s.y, s.r, s.r);
+    }
+
+    // 月亮
+    ctx.fillStyle = 'rgba(240,240,255,.16)';
+    ctx.beginPath();
+    ctx.arc(268, 34, 15, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(240,240,255,.85)';
+    ctx.beginPath();
+    ctx.arc(268, 34, 12, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#1b1f3a';
+    ctx.beginPath();
+    ctx.arc(274, 30, 10, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 远山（两层视差）
+    ctx.fillStyle = '#171a30';
+    drawHills(6, 108, 34, 0.9, t * 0.6);
+    ctx.fillStyle = '#121425';
+    drawHills(9, 118, 24, 0.7, t * 1.1);
+
+    // 地面
+    const gr = ctx.createLinearGradient(0, GROUND_Y, 0, H);
+    gr.addColorStop(0, '#2b3a2e');
+    gr.addColorStop(1, '#141a17');
+    ctx.fillStyle = gr;
+    ctx.fillRect(0, GROUND_Y, W, H - GROUND_Y);
+
+    // 地面纹理线
+    ctx.fillStyle = 'rgba(120,160,120,.10)';
+    for (let x = 0; x < W; x += 16) {
+      ctx.fillRect(x + ((t * 6) % 16), GROUND_Y + 4, 8, 1);
+    }
+    ctx.fillStyle = 'rgba(90,140,100,.35)';
+    ctx.fillRect(0, GROUND_Y, W, 1);
+  }
+
+  function drawHills(count, baseY, amp, speed, off) {
+    ctx.beginPath();
+    ctx.moveTo(0, H);
+    for (let i = 0; i <= count * 2; i++) {
+      const x = (i * W) / (count * 2);
+      const y = baseY - Math.abs(Math.sin(i * 1.7 + off * 0.05)) * amp;
+      ctx.lineTo(x, y);
+    }
+    ctx.lineTo(W, H);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  /* ---------------- 粒子与飘字 ---------------- */
+  const particles = [];
+  const floats = [];
+
+  function spawnHit(x, y, color, n) {
+    for (let i = 0; i < (n || 5); i++) {
+      particles.push({
+        x, y,
+        vx: (Math.random() - 0.5) * 60,
+        vy: -Math.random() * 55 - 12,
+        life: 0.45 + Math.random() * 0.25,
+        age: 0,
+        color: color || '#ffe14d',
+        size: Math.random() < 0.5 ? 1 : 2
+      });
+    }
+  }
+
+  function spawnFloat(x, y, text, color) {
+    floats.push({ x, y, text, color, age: 0, life: 0.9 });
+  }
+
+  function updateEffects(dt) {
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.age += dt;
+      if (p.age >= p.life) { particles.splice(i, 1); continue; }
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vy += 180 * dt;
+    }
+    for (let i = floats.length - 1; i >= 0; i--) {
+      const f = floats[i];
+      f.age += dt;
+      if (f.age >= f.life) { floats.splice(i, 1); continue; }
+      f.y -= 22 * dt;
+    }
+  }
+
+  function drawEffects() {
+    for (const p of particles) {
+      ctx.globalAlpha = 1 - p.age / p.life;
+      ctx.fillStyle = p.color;
+      ctx.fillRect(Math.round(p.x), Math.round(p.y), p.size, p.size);
+    }
+    ctx.globalAlpha = 1;
+    ctx.font = 'bold 7px monospace';
+    ctx.textAlign = 'center';
+    for (const f of floats) {
+      const a = 1 - f.age / f.life;
+      ctx.globalAlpha = a;
+      ctx.fillStyle = '#000';
+      ctx.fillText(f.text, Math.round(f.x) + 1, Math.round(f.y) + 1);
+      ctx.fillStyle = f.color;
+      ctx.fillText(f.text, Math.round(f.x), Math.round(f.y));
+    }
+    ctx.globalAlpha = 1;
+    ctx.textAlign = 'left';
+  }
+
+  /* ---------------- 战斗逻辑 ---------------- */
+  const HERO_X = 74;
+  const ENEMY_X = 224;
+
+  let heroAttackAnim = 0;   // 前进动画计时
+  let enemyAttackAnim = 0;
+  let enemyHurtAnim = 0;
+  let heroHurtAnim = 0;
+
+  function spawnEnemy() {
+    const def = stageEnemy(S.stage);
+    S.enemy = {
+      def,
+      hp: def.hp,
+      maxHp: def.hp,
+      x: ENEMY_X + 30,
+      spawnAnim: 0
+    };
+    S.enemyAtkTimer = 0;
+  }
+
+  function onKill() {
+    const e = S.enemy;
+    S.kills++;
+    S.gold += e.def.gold;
+    gainXp(e.def.xp);
+    spawnFloat(ENEMY_X + 12, GROUND_Y - 46, '+' + e.def.gold + '金', PAL.gold);
+    spawnHit(ENEMY_X + 16, GROUND_Y - 34, PAL.slime, 12);
+    // 每击杀 10 只推进一关
+    if (S.kills % 10 === 0) {
+      S.stage++;
+      toast('进入第 ' + S.stage + ' 关');
+    }
+    S.enemy = null;
+    setTimeout(() => { if (!S.enemy) spawnEnemy(); }, 260);
+  }
+
+  function gainXp(amount) {
+    S.hero.xp += amount;
+    let need = xpToNext();
+    while (S.hero.xp >= need) {
+      S.hero.xp -= need;
+      S.hero.level++;
+      S.hero.hp = maxHp();
+      toast('升级！Lv.' + S.hero.level);
+      spawnFloat(HERO_X + 16, GROUND_Y - 56, 'LEVEL UP', '#7dd3fc');
+      need = xpToNext();
+    }
+  }
+
+  function heroAttack() {
+    const e = S.enemy;
+    if (!e) return;
+    const crit = Math.random() < critChance();
+    let dmg = attack() * (0.9 + Math.random() * 0.2);
+    if (crit) dmg *= 2;
+    dmg = Math.max(1, Math.round(dmg));
+    e.hp -= dmg;
+    heroAttackAnim = 0.22;
+    spawnHit(e.x + 14, GROUND_Y - 30, crit ? '#ffcc4d' : '#ffffff', crit ? 10 : 5);
+    spawnFloat(e.x + 14, GROUND_Y - 40, (crit ? '暴击 ' : '') + dmg, crit ? PAL.gold : '#ffffff');
+    if (e.hp <= 0) {
+      e.hp = 0;
+      onKill();
+    }
+  }
+
+  function enemyAttack() {
+    const e = S.enemy;
+    if (!e) return;
+    const dmg = Math.max(1, Math.round(e.def.atk * (0.85 + Math.random() * 0.3)));
+    S.hero.hp -= dmg;
+    enemyAttackAnim = 0.22;
+    heroHurtAnim = 0.2;
+    spawnFloat(HERO_X + 16, GROUND_Y - 44, '-' + dmg, '#ff6b6f');
+    if (S.hero.hp <= 0) {
+      // 死亡：回到当前关起点，损失部分金币
+      const lost = Math.floor(S.gold * 0.1);
+      S.gold -= lost;
+      S.hero.hp = maxHp();
+      S.enemy = null;
+      toast(lost > 0 ? '被击败了…损失 ' + lost + ' 金币' : '被击败了…');
+      setTimeout(() => { if (!S.enemy) spawnEnemy(); }, 700);
+    }
+  }
+
+  /* ---------------- 主循环 ---------------- */
+  let lastTime = 0;
+  let elapsed = 0;
+
+  function update(dt) {
+    elapsed += dt;
+    // 重生 / 受伤动画衰减
+    if (heroAttackAnim > 0) heroAttackAnim = Math.max(0, heroAttackAnim - dt);
+    if (enemyAttackAnim > 0) enemyAttackAnim = Math.max(0, enemyAttackAnim - dt);
+    if (heroHurtAnim > 0) heroHurtAnim = Math.max(0, heroHurtAnim - dt);
+
+    if (!S.enemy) return;
+
+    // 敌人入场
+    if (S.enemy.x > ENEMY_X) {
+      S.enemy.x = Math.max(ENEMY_X, S.enemy.x - S.enemy.def.speed * dt * 6);
+      return;
+    }
+
+    // 生命回复
+    S.regenAcc += regenRate() * dt;
+    if (S.regenAcc >= 1) {
+      const heal = Math.floor(S.regenAcc);
+      S.regenAcc -= heal;
+      S.hero.hp = Math.min(maxHp(), S.hero.hp + heal);
+    }
+
+    // 英雄攻击节奏
+    S.heroAtkTimer += dt;
+    const ai = attackInterval();
+    while (S.heroAtkTimer >= ai) {
+      S.heroAtkTimer -= ai;
+      heroAttack();
+      if (!S.enemy) break;
+    }
+
+    // 敌人攻击节奏（固定 1.25 秒）
+    if (S.enemy) {
+      S.enemyAtkTimer += dt;
+      if (S.enemyAtkTimer >= 1.25) {
+        S.enemyAtkTimer -= 1.25;
+        enemyAttack();
+      }
+    }
+  }
+
+  function render() {
+    drawBackground(elapsed);
+
+    // 英雄影子
+    ctx.fillStyle = PAL.shadow;
+    ctx.beginPath();
+    ctx.ellipse(HERO_X + 16, GROUND_Y + 2, 13, 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 英雄（攻击时前冲）
+    const heroOffset = heroAttackAnim > 0 ? -Math.sin((heroAttackAnim / 0.22) * Math.PI) * 14 : 0;
+    const heroBob = Math.sin(elapsed * 3) * 1.2;
+    ctx.save();
+    if (heroHurtAnim > 0) {
+      ctx.globalAlpha = 0.55 + 0.45 * Math.abs(Math.sin(heroHurtAnim * 40));
+    }
+    drawSprite('hero', HERO_X + heroOffset, GROUND_Y - 24 + heroBob, PX, false);
+    ctx.restore();
+
+    // 敌人
+    if (S.enemy) {
+      const e = S.enemy;
+      const bounce = Math.sin(elapsed * 4 + 1) * 1.5;
+      const eHurt = S.heroHurtAnim; // 未用
+      const eOff = enemyAttackAnim > 0 ? Math.cos((enemyAttackAnim / 0.22) * Math.PI) * 12 : 0;
+
+      ctx.fillStyle = PAL.shadow;
+      ctx.beginPath();
+      ctx.ellipse(e.x + 16, GROUND_Y + 2, 14, 4, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      const sc = e.def.scale;
+      const drawY = GROUND_Y - 10 * sc + bounce;
+
+      // 受击闪白
+      ctx.save();
+      drawSprite(e.def.sprite, e.x + eOff - (e.def.sprite === 'slime' ? 0 : 2), drawY, PX * sc / 1.6, true);
+      ctx.restore();
+
+      // 敌人血条
+      const bw = 40, bh = 3;
+      const bx = e.x + 16 - bw / 2, by = GROUND_Y - 52;
+      ctx.fillStyle = 'rgba(0,0,0,.65)';
+      ctx.fillRect(bx - 1, by - 1, bw + 2, bh + 2);
+      const ratio = Math.max(0, e.hp / e.maxHp);
+      ctx.fillStyle = ratio > 0.5 ? '#4ade80' : ratio > 0.22 ? '#facc15' : '#ef4444';
+      ctx.fillRect(bx, by, bw * ratio, bh);
+      ctx.strokeStyle = 'rgba(255,255,255,.18)';
+      ctx.strokeRect(bx - 1.5, by - 1.5, bw + 3, bh + 3);
+    }
+
+    drawEffects();
+  }
+
+  function loop(now) {
+    requestAnimationFrame(loop);
+    if (!lastTime) lastTime = now;
+    let dt = (now - lastTime) / 1000;
+    lastTime = now;
+    if (dt > 0.25) dt = 0.25;   // 防止切后台后跳帧
+    update(dt);
+    render();
+    uiTick(dt);
+  }
+
+  /* ---------------- UI ---------------- */
+  const el = id => document.getElementById(id);
+  const uiCache = {};
+  function setText(id, val) {
+    if (uiCache[id] === val) return;
+    uiCache[id] = val;
+    const n = el(id);
+    if (n) n.textContent = val;
+  }
+
+  let uiAcc = 0;
+  function uiTick(dt) {
+    uiAcc += dt;
+    if (uiAcc < 0.1) return;
+    uiAcc = 0;
+    const hp = Math.max(0, Math.round(S.hero.hp));
+    const mhp = maxHp();
+    setText('heroLv', S.hero.level);
+    setText('heroAtk', attack().toFixed(0));
+    setText('hpTxt', hp + ' / ' + mhp);
+    setText('xpTxt', Math.floor(S.hero.xp) + ' / ' + xpToNext());
+    el('hpFill').style.width = (hp / mhp * 100).toFixed(1) + '%';
+    el('xpFill').style.width = (S.hero.xp / xpToNext() * 100).toFixed(1) + '%';
+    setText('hudGold', S.gold);
+    setText('hudStage', S.stage);
+    setText('hudKills', S.kills);
+    if (currentTab === 'skill') refreshSkillButtons();
+  }
+
+  function toast(msg) {
+    const wrap = el('toasts');
+    const d = document.createElement('div');
+    d.className = 'toast';
+    d.textContent = msg;
+    wrap.appendChild(d);
+    setTimeout(() => {
+      d.style.transition = 'opacity .3s';
+      d.style.opacity = '0';
+      setTimeout(() => d.remove(), 320);
+    }, 1500);
+  }
+
+  /* ---------------- 标签页 ---------------- */
+  let currentTab = 'hero';
+
+  function skillCost(sk) {
+    const lv = S.skillLv[sk.id] || 0;
+    return Math.round(sk.baseCost * Math.pow(sk.grow, lv));
+  }
+
+  function renderTab(name) {
+    const body = el('tabBody');
+    body.innerHTML = '';
+
+    if (name === 'hero') {
+      body.innerHTML = `
+        <div class="row"><div class="icon">⚔️</div><div class="info">
+          <div class="nm">攻击力 ${attack().toFixed(0)}</div>
+          <div class="sub">基础 5 + 等级加成 + 技能加成</div></div></div>
+        <div class="row"><div class="icon">❤️</div><div class="info">
+          <div class="nm">最大生命 ${maxHp()}</div>
+          <div class="sub">每秒回复 ${regenRate().toFixed(1)}</div></div></div>
+        <div class="row"><div class="icon">💨</div><div class="info">
+          <div class="nm">攻击间隔 ${(attackInterval() * 1000).toFixed(0)} ms</div>
+          <div class="sub">攻速加成 ${(S.hero.speedBonus * 100).toFixed(0)}%</div></div></div>
+        <div class="row"><div class="icon">🎯</div><div class="info">
+          <div class="nm">暴击率 ${(critChance() * 100).toFixed(0)}%</div>
+          <div class="sub">暴击造成 2 倍伤害</div></div></div>
+        <div class="row"><div class="icon">🗡️</div><div class="info">
+          <div class="nm">累计击杀 ${S.kills}</div>
+          <div class="sub">每击杀 10 只进入下一关</div></div></div>
+      `;
+      return;
+    }
+
+    if (name === 'gear') {
+      const slots = [
+        { name: '武器', icon: '🗡️', bonus: Math.floor(attack() * 0.0) },
+        { name: '护甲', icon: '🛡️' },
+        { name: '饰品', icon: '💍' }
+      ];
+      body.innerHTML = slots.map(s => `
+        <div class="row"><div class="icon">${s.icon}</div><div class="info">
+          <div class="nm">${s.name}</div>
+          <div class="sub">未装备 · 开发中</div></div>
+          <button class="btn ghost" disabled>空</button></div>
+      `).join('') + `<div style="color:var(--muted);font-size:12px;text-align:center;padding:14px 0">装备系统将在下个版本加入</div>`;
+      return;
+    }
+
+    if (name === 'skill') {
+      SKILLS.forEach(sk => {
+        const lv = S.skillLv[sk.id] || 0;
+        const cost = skillCost(sk);
+        const row = document.createElement('div');
+        row.className = 'row';
+        row.innerHTML = `
+          <div class="icon">${sk.icon}</div>
+          <div class="info">
+            <div class="nm">${sk.name} <span style="color:var(--gold);font-size:11px">Lv.${lv}</span></div>
+            <div class="sub">${sk.desc}</div>
+          </div>`;
+        const btn = document.createElement('button');
+        btn.className = 'btn';
+        btn.dataset.skill = sk.id;
+        btn.textContent = cost + ' 金';
+        btn.onclick = () => buySkill(sk);
+        row.appendChild(btn);
+        body.appendChild(row);
+      });
+      refreshSkillButtons();
+      return;
+    }
+
+    if (name === 'setting') {
+      body.innerHTML = `
+        <div class="row"><div class="icon">💾</div><div class="info">
+          <div class="nm">存档</div><div class="sub">自动保存在本机浏览器</div></div>
+          <button class="btn" id="saveBtn">立即保存</button></div>
+        <div class="row"><div class="icon">🗑️</div><div class="info">
+          <div class="nm">重置进度</div><div class="sub">清空等级、金币与技能</div></div>
+          <button class="btn ghost" id="resetBtn">重置</button></div>
+        <div style="color:var(--muted);font-size:11px;line-height:1.8;padding:10px 6px">
+          离线收益：关闭页面后仍会按每秒 0.3 金币累计，最多累计 8 小时。<br/>
+          提示：游戏速度与浏览器标签页是否可见有关。
+        </div>
+        <div class="row"><div class="icon">🏷️</div><div class="info">
+          <div class="nm">版本</div>
+          <div class="sub" id="verTxt">读取中…</div></div></div>`;
+      el('saveBtn').onclick = () => {
+        save() ? toast('已保存') : toast('保存失败');
+      };
+      el('resetBtn').onclick = async () => {
+        if (confirm('确定要清空全部进度吗？此操作不可恢复。')) {
+          try { localStorage.removeItem(SAVE_KEY); } catch (e) { /* 忽略 */ }
+          try { await fetch(SAVE_API, { method: 'DELETE' }); } catch (e) { /* 忽略 */ }
+          location.reload();
+        }
+      };
+
+      // 读取服务端版本，便于确认热更新/升级是否生效
+      (async () => {
+        const n = el('verTxt');
+        if (!n) return;
+        try {
+          const r = await fetch(basePath() + 'api/version', { headers: { 'Accept': 'application/json' } });
+          if (!r.ok) throw new Error('bad');
+          const v = await r.json();
+          n.textContent = `${v.version} · ${v.size} 字节 · ${v.fingerprint}`;
+        } catch (e) {
+          n.textContent = '离线模式（未连接服务端）';
+        }
+      })();
+
+      return;
+    }
+  }
+
+  function refreshSkillButtons() {
+    document.querySelectorAll('#tabBody button[data-skill]').forEach(btn => {
+      const id = btn.dataset.skill;
+      const sk = SKILLS.find(s => s.id === id);
+      const cost = skillCost(sk);
+      btn.textContent = cost + ' 金';
+      btn.disabled = S.gold < cost;
+    });
+  }
+
+  function buySkill(sk) {
+    const cost = skillCost(sk);
+    if (S.gold < cost) return;
+    S.gold -= cost;
+    S.skillLv[sk.id] = (S.skillLv[sk.id] || 0) + 1;
+    sk.apply(S.hero);
+    if (sk.id === 'hp') S.hero.hp = maxHp();
+    toast(sk.name + ' 提升至 Lv.' + S.skillLv[sk.id]);
+    renderTab('skill');
+    if (currentTab !== 'skill') renderTab(currentTab);
+  }
+
+  document.querySelectorAll('.tab').forEach(t => {
+    t.onclick = () => {
+      document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+      t.classList.add('active');
+      currentTab = t.dataset.tab;
+      renderTab(currentTab);
+    };
+  });
+
+  /* ---------------- 头像 ---------------- */
+  function drawAvatar() {
+    const av = el('avatar');
+    const g = av.getContext('2d');
+    g.imageSmoothingEnabled = false;
+    g.clearRect(0, 0, 16, 16);
+    const sp = buildSprite('hero');
+    g.drawImage(sp.canvas, 0, 0, sp.w, sp.h, 0, 2, 16, 16);
+  }
+
+  /* ---------------- 离线收益 ---------------- */
+  function applyOffline(saved) {
+    const now = Date.now();
+    const away = Math.max(0, Math.floor((now - (saved.time || now)) / 1000));
+    if (away < 60) return;
+    const capped = Math.min(away, 8 * 3600);
+    const gold = Math.floor(capped * 0.3);
+    if (gold <= 0) return;
+    el('offTime').textContent = formatDuration(capped);
+    el('offGold').textContent = gold + ' 金币';
+    el('offline').classList.add('show');
+    el('offOk').onclick = () => {
+      S.gold += gold;
+      el('offline').classList.remove('show');
+      save();
+    };
+  }
+
+  function formatDuration(sec) {
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = sec % 60;
+    if (h > 0) return h + ' 小时 ' + m + ' 分钟';
+    if (m > 0) return m + ' 分钟 ' + s + ' 秒';
+    return s + ' 秒';
+  }
+
+  /* ---------------- 初始化 ---------------- */
+  function init() {
+    // 存档需要从服务端拉取，故异步载入；load() 内部已处理异常并回退本地
+    boot().catch(() => {
+      try { renderTab('hero'); } catch (e) { /* 忽略 */ }
+    });
+  }
+
+  async function boot() {
+    const saved = await load();
+    if (saved) {
+      S.hero.level = saved.level || 1;
+      S.hero.xp = saved.xp || 0;
+      S.hero.atkBonus = saved.atkBonus || 0;
+      S.hero.hpBonus = saved.hpBonus || 0;
+      S.hero.speedBonus = saved.speedBonus || 0;
+      S.hero.critBonus = saved.critBonus || 0;
+      S.hero.regenBonus = saved.regenBonus || 0;
+      S.gold = saved.gold || 0;
+      S.stage = saved.stage || 1;
+      S.kills = saved.kills || 0;
+      S.skillLv = Object.assign({ atk: 0, hp: 0, speed: 0, crit: 0, regen: 0 }, saved.skillLv || {});
+      S.hero.hp = Math.min(maxHp(), saved.hp || maxHp());
+      applyOffline(saved);
+    } else {
+      S.hero.hp = maxHp();
+    }
+
+    fitCanvas();
+    drawAvatar();
+    renderTab('hero');
+    spawnEnemy();
+
+    // 自动存档
+    setInterval(() => save(), 5000);
+    window.addEventListener('beforeunload', () => save());
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') save();
+    });
+
+    requestAnimationFrame(loop);
+  }
+
+  // 点击画布给个小反馈（未来可做点击加速）
+  canvas.addEventListener('pointerdown', () => {
+    spawnHit(HERO_X + 20, GROUND_Y - 20, '#7dd3fc', 3);
+  });
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();

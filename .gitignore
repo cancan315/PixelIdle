@@ -1,0 +1,12 @@
+# 构建产物
+*.fpk
+dist/
+
+# 开发临时数据
+.devdata/
+node_modules/
+
+# 运行时数据（不应进版本库）
+save-*.json
+*.log
+.DS_Store
