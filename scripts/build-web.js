@@ -32,4 +32,5 @@ const out = html.replace(TAG, () => '<script>\n' + js + '\n</script>');
 fs.mkdirSync(outDir, { recursive: true });
 fs.writeFileSync(outHtml, out, 'utf8');
 
-console.log('已生成', path.relative(root, outHtml), '（', out.length, '字节 ）');
+console.log('已生成', path.relative(root, outHtml),
+            '（', Buffer.byteLength(out, 'utf8'), '字节 ）');
