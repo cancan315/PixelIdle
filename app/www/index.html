@@ -1119,7 +1119,10 @@
         <div style="color:var(--muted);font-size:11px;line-height:1.8;padding:10px 6px">
           离线收益：关闭页面后仍会按每秒 0.3 金币累计，最多累计 8 小时。<br/>
           提示：游戏速度与浏览器标签页是否可见有关。
-        </div>`;
+        </div>
+        <div class="row"><div class="icon">🏷️</div><div class="info">
+          <div class="nm">版本</div>
+          <div class="sub" id="verTxt">读取中…</div></div></div>`;
       el('saveBtn').onclick = () => {
         save() ? toast('已保存') : toast('保存失败');
       };
@@ -1130,6 +1133,21 @@
           location.reload();
         }
       };
+
+      // 读取服务端版本，便于确认热更新/升级是否生效
+      (async () => {
+        const n = el('verTxt');
+        if (!n) return;
+        try {
+          const r = await fetch(basePath() + 'api/version', { headers: { 'Accept': 'application/json' } });
+          if (!r.ok) throw new Error('bad');
+          const v = await r.json();
+          n.textContent = `${v.version} · ${v.size} 字节 · ${v.fingerprint}`;
+        } catch (e) {
+          n.textContent = '离线模式（未连接服务端）';
+        }
+      })();
+
       return;
     }
   }
