@@ -13,12 +13,102 @@
 - 存档双写：localStorage + 服务端，支持多端同步；进度按手机/电脑等设备共享
 - 离线收益上限 8 小时
 
+## 开发流程（重要）
+
+### 为什么以前每次都要卸载重装
+
+应用中心安装 `.fpk` 时，**版本号必须比已安装的大** 才会走「升级」流程。
+如果版本号不变（或更小），系统只能当作重装处理，于是要先卸载——
+这就是你每次都要卸载旧版本的根因。
+
+现在用 `scripts/release.sh` 自动递增版本号，这个问题不再出现。
+
+### 三种开发方式
+
+| 方式 | 命令 | 需要 root | 用途 |
+| --- | --- | --- | --- |
+| ① 开发服务器 | `./scripts/dev.sh` | 否 | **日常开发首选**，改完刷新即可 |
+| ② 同步到已装应用 | `sudo ./scripts/sync.sh` | 是 | 在真实网关下验证 |
+| ③ 正式发布 | `./scripts/release.sh` | 否 | 升版本 + 打包 + 打标签 |
+
+#### ① 开发服务器（推荐）
+
+```bash
+./scripts/dev.sh            # 默认端口 8899
+./scripts/dev.sh 9000       # 指定端口
+```
+
+- 直接服务 `src/` 目录，**改文件刷新浏览器即生效**，不打包、不安装
+- 监听 `0.0.0.0`，可用 `http://<NAS的IP>:8899/app/PixelIdle/` 在电脑上打开
+- 存档写到 `.devdata/`，不污染正式数据
+- 停止：`kill $(cat .devdata/dev.pid)`
+
+改前端（`src/game.js` / `src/index.html`）**完全不用重启**，
+因为服务端每次请求都实时读文件。
+
+#### ② 同步到已安装的应用
+
+想在真实网关 `/app/PixelIdle` 下验证时用：
+
+```bash
+sudo ./scripts/sync.sh
+```
+
+需要 root，因为已安装目录属主是 `PixelIdle` 用户。
+脚本会重建前端、rsync 到 `/vol1/@appcenter/PixelIdle`、重启服务。
+
+#### ③ 正式发布
+
+```bash
+./scripts/release.sh patch "修复了xxx"   # 1.0.2 -> 1.0.3
+./scripts/release.sh minor "新增装备系统" # 1.0.3 -> 1.1.0
+./scripts/release.sh major "重构"        # 1.1.0 -> 2.0.0
+```
+
+自动完成：版本号递增 → 更新 changelog → 内联前端 → 打包 `.fpk` → git 提交 → 打 tag。
+
+然后把新的 `PixelIdle.fpk` 在应用中心安装即可，**无需卸载**。
+
+### 源码结构
+
+```
+src/            开发源码（可读，带 game.js 独立文件）
+  index.html    <script src="game.js">
+  game.js       游戏逻辑
+app/www/        构建产物（单文件，由 scripts/build-web.js 生成，勿手改）
+```
+
+`src/` 只用于开发，不进 `.fpk`；打包时内联成 `app/www/index.html`。
+
+### 确认版本是否生效
+
+- 浏览器打开 `/app/PixelIdle/api/version`
+- 或游戏内「设置」页底部查看版本与指纹
+
+指纹由 `index.html` 的大小 + 修改时间生成，一眼可判断是否更新成功。
+
+### 关于「真正的热更新」
+
+需要注意区分两类：
+
+**A. 开发期热更新**（本文档的方式）——改代码即时生效，完全可行，已实现。
+
+**B. 线上自动热更新**（应用自己从服务器拉新版本代码覆盖运行文件）——
+技术上能做（服务已有写自身 `www/` 的权限），但**不建议**：
+
+- 绕过应用中心审核，第三方应用上架时通常不被接受
+- 拉取通道一旦被劫持等于远程执行任意代码
+- 版本状态与 `manifest` 不一致，出问题极难排查
+
+如果只是想让**数值/关卡配置**可变，更安全的做法是抽一个 `config.json`
+由服务端下发，逻辑仍随 `.fpk` 版本走。
+
 ## 构建
 
 ```bash
-# 打包为可安装的 .fpk（在本目录执行）
+./scripts/release.sh patch "说明"   # 推荐：自动升版本 + 打包
+# 或手动打包（不升版本，仅本地测试用）
 ../tools/fnpack build
-# 产物：PixelIdle.fpk
 ```
 
 ## 测试
@@ -65,6 +155,7 @@
 | POST | `/app/PixelIdle/api/save` | 保存存档（上限 64KB，校验 JSON） |
 | DELETE | `/app/PixelIdle/api/save` | 清除存档 |
 | GET | `/app/PixelIdle/api/health` | 健康检查，返回路径与运行状态 |
+| GET | `/app/PixelIdle/api/version` | 返回版本号与前端指纹，用于确认更新是否生效 |
 
 服务同时兼容**带前缀**和**不带前缀**的转发，避免网关行为差异导致 404。
 
@@ -90,14 +181,22 @@ uid 会做白名单过滤（仅保留字母数字下划线），防止路径注�
 
 ```
 PixelIdle/
-├── manifest              # 含 install_dep_apps = nodejs_v22
+├── manifest              # 版本号、依赖 nodejs_v22
+├── src/                  # 开发源码（不进 .fpk）
+│   ├── index.html
+│   └── game.js
+├── scripts/
+│   ├── dev.sh            # 开发服务器（热更新）
+│   ├── sync.sh           # 同步到已安装应用（需 root）
+│   ├── release.sh        # 升版本 + 打包 + 打标签
+│   └── build-web.js      # src/ 内联为 app/www/index.html
 ├── app/
 │   ├── server/server.js  # 网关后端（零依赖）
 │   ├── ui/
 │   │   ├── config        # gatewayPrefix + gatewaySocket
 │   │   └── images/
-│   └── www/index.html    # 单文件游戏（已内联 JS）
-├── cmd/main              # 启动/停止 Node 服务
+│   └── www/index.html    # 构建产物（勿手改）
+├── cmd/                  # 生命周期脚本（含升级备份）
 └── config/               # privilege / resource
 ```
 
