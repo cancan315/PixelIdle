@@ -158,10 +158,21 @@ async function handle(req, res) {
     if (req.method === 'GET') {
       try {
         const raw = fs.readFileSync(file, 'utf8');
+        // 校验后再返回，避免把损坏内容丢给前端
+        try {
+          const parsed = JSON.parse(raw);
+          if (!parsed || typeof parsed !== 'object' || parsed.v === undefined) {
+            throw new Error('bad shape');
+          }
+        } catch (e) {
+          log('save file corrupt, returning null:', file);
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache' });
+          return res.end('null');
+        }
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache' });
         return res.end(raw);
       } catch (e) {
-        // 无存档时返回空对象，前端据此走新游戏流程
+        // 无存档时返回 null，前端据此走新游戏流程
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache' });
         return res.end('null');
       }
@@ -170,11 +181,30 @@ async function handle(req, res) {
     if (req.method === 'POST') {
       try {
         const body = await readBody(req, MAX_SAVE);
-        JSON.parse(body); // 校验是合法 JSON
-        fs.writeFileSync(file, body, 'utf8');
+
+        // 基本校验：必须是含版本号的对象
+        let parsed;
+        try { parsed = JSON.parse(body); } catch (e) {
+          return send(res, 400, '{"ok":false,"error":"invalid json"}', {
+            'Content-Type': 'application/json; charset=utf-8'
+          });
+        }
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) ||
+            parsed.v === undefined) {
+          return send(res, 400, '{"ok":false,"error":"invalid save shape"}', {
+            'Content-Type': 'application/json; charset=utf-8'
+          });
+        }
+
+        // 原子写：先写临时文件再 rename，避免中途被中断导致存档损坏
+        const tmp = file + '.tmp';
+        fs.writeFileSync(tmp, body, 'utf8');
+        fs.renameSync(tmp, file);
+
         return send(res, 200, '{"ok":true}', { 'Content-Type': 'application/json; charset=utf-8' });
       } catch (e) {
-        return send(res, 400, '{"ok":false,"error":"invalid save"}', {
+        log('save error:', e && e.message);
+        return send(res, 400, '{"ok":false,"error":"write failed"}', {
           'Content-Type': 'application/json; charset=utf-8'
         });
       }

@@ -961,6 +961,73 @@
      9. save 服务 —— 双写（localStorage + 服务端）
      ========================================================= */
   const save = (function () {
+    /* —— 数值合法范围：防止坏档 / 篡改导致崩溃 —— */
+    const LIMIT = {
+      level: [1, 9999],
+      xp: [0, 1e12],
+      hp: [0, 1e12],
+      gold: [0, 1e15],
+      stage: [1, 1e5],
+      kills: [0, 1e12],
+      bonus: [0, 1e9],     // atk/hp/speed/crit/regen 加成
+      skill: [0, 1000]
+    };
+
+    function clampNum(v, range, fallback) {
+      const n = Number(v);
+      if (!isFinite(n)) return fallback;
+      return U.clamp(n, range[0], range[1]);
+    }
+
+    /* —— 版本迁移：老存档必须能升级，否则玩家进度会直接清零 —— */
+    function migrate(raw) {
+      if (!raw || typeof raw !== 'object') return null;
+
+      let d = raw;
+
+      // 无版本号的历史存档：按 v1 处理
+      if (d.v === undefined && typeof d.level === 'number') {
+        d = Object.assign({}, d, { v: SAVE_VERSION });
+      }
+
+      const v = Number(d.v);
+      if (!isFinite(v) || v < 1) return null;
+
+      // 未来版本（玩家降级了应用）：不接受，避免误读
+      if (v > SAVE_VERSION) return null;
+
+      // 预留：v1 -> v2 的迁移写在这里
+      // if (v === 1) { d = migrateV1toV2(d); }
+
+      return sanitize(d);
+    }
+
+    /* —— 规范化字段，任何异常值都退回安全默认 —— */
+    function sanitize(d) {
+      if (!d || typeof d !== 'object') return null;
+      const out = {
+        v: SAVE_VERSION,
+        level: Math.floor(clampNum(d.level, LIMIT.level, 1)),
+        xp: clampNum(d.xp, LIMIT.xp, 0),
+        hp: clampNum(d.hp, LIMIT.hp, 0),
+        atkBonus: clampNum(d.atkBonus, LIMIT.bonus, 0),
+        hpBonus: clampNum(d.hpBonus, LIMIT.bonus, 0),
+        speedBonus: clampNum(d.speedBonus, LIMIT.bonus, 0),
+        critBonus: clampNum(d.critBonus, LIMIT.bonus, 0),
+        regenBonus: clampNum(d.regenBonus, LIMIT.bonus, 0),
+        gold: Math.floor(clampNum(d.gold, LIMIT.gold, 0)),
+        stage: Math.floor(clampNum(d.stage, LIMIT.stage, 1)),
+        kills: Math.floor(clampNum(d.kills, LIMIT.kills, 0)),
+        skillLv: {},
+        time: clampNum(d.time, [0, 4e12], Date.now())
+      };
+      const src = (d.skillLv && typeof d.skillLv === 'object') ? d.skillLv : {};
+      TUNE.skills.forEach((sk) => {
+        out.skillLv[sk.id] = Math.floor(clampNum(src[sk.id], LIMIT.skill, 0));
+      });
+      return out;
+    }
+
     function snapshot(now) {
       return {
         v: SAVE_VERSION,
@@ -987,10 +1054,13 @@
       } catch (e) { return false; }
     }
 
+    /** 周期保存：本地同步写 + 服务端异步写 */
     function write() {
       const data = snapshot();
       state.lastSave = data.time;
       state.pendingSave = true;
+
+      // 本地先写，保证任何情况下不丢
       writeLocal(data);
 
       try {
@@ -1003,42 +1073,71 @@
       } catch (e) {
         state.pendingSave = false;
       }
-      bus.emit('save:written', { at: data.time });
+
+      bus.emit('save:written', { at: data.time, source: 'interval' });
       return true;
     }
 
-    function normalize(d) {
-      if (!d || typeof d !== 'object' || d.v !== SAVE_VERSION) return null;
-      return d;
+    /** 关页时保存：用 sendBeacon，比 fetch 更可能送达 */
+    function writeOnExit() {
+      const data = snapshot();
+      writeLocal(data);
+      state.lastSave = data.time;
+
+      try {
+        if (typeof navigator !== 'undefined' && navigator.sendBeacon &&
+            typeof Blob !== 'undefined') {
+          const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+          if (navigator.sendBeacon(SAVE_API, blob)) {
+            bus.emit('save:written', { at: data.time, source: 'beacon' });
+            return true;
+          }
+        }
+      } catch (e) { /* 退回到普通写 */ }
+
+      return write();
     }
 
     function readLocal() {
-      try { return normalize(JSON.parse(localStorage.getItem(SAVE_KEY) || 'null')); }
+      try { return migrate(JSON.parse(localStorage.getItem(SAVE_KEY) || 'null')); }
       catch (e) { return null; }
     }
 
+    /**
+     * 读取存档：本地与服务端比对时间戳，取较新的那份。
+     * 以前无条件信任服务端，服务宕机期间玩的进度会被回滚。
+     */
     async function read() {
+      const local = readLocal();
+      let remote = null;
+
       try {
         const res = await fetch(SAVE_API, { headers: { 'Accept': 'application/json' } });
-        if (res.ok) {
-          const d = normalize(await res.json());
-          if (d) return d;
-        }
-      } catch (e) { /* 离线，退回本地 */ }
-      return readLocal();
+        if (res.ok) remote = migrate(await res.json());
+      } catch (e) { /* 离线，只用本地 */ }
+
+      if (remote && local) {
+        const useLocal = (local.time || 0) > (remote.time || 0);
+        state.saveSource = useLocal ? 'local-newer' : 'server';
+        return useLocal ? local : remote;
+      }
+      if (remote) { state.saveSource = 'server'; return remote; }
+      if (local) { state.saveSource = 'local'; return local; }
+      state.saveSource = 'none';
+      return null;
     }
 
     function apply(d) {
-      state.hero.level = d.level || 1;
-      state.hero.xp = d.xp || 0;
-      state.hero.atkBonus = d.atkBonus || 0;
-      state.hero.hpBonus = d.hpBonus || 0;
-      state.hero.speedBonus = d.speedBonus || 0;
-      state.hero.critBonus = d.critBonus || 0;
-      state.hero.regenBonus = d.regenBonus || 0;
-      state.gold = d.gold || 0;
-      state.stage = d.stage || 1;
-      state.kills = d.kills || 0;
+      state.hero.level = d.level;
+      state.hero.xp = d.xp;
+      state.hero.atkBonus = d.atkBonus;
+      state.hero.hpBonus = d.hpBonus;
+      state.hero.speedBonus = d.speedBonus;
+      state.hero.critBonus = d.critBonus;
+      state.hero.regenBonus = d.regenBonus;
+      state.gold = d.gold;
+      state.stage = d.stage;
+      state.kills = d.kills;
       state.skillLv = Object.assign(
         { atk: 0, hp: 0, speed: 0, crit: 0, regen: 0 }, d.skillLv || {}
       );
@@ -1050,7 +1149,10 @@
       try { await fetch(SAVE_API, { method: 'DELETE' }); } catch (e) { /* 忽略 */ }
     }
 
-    return { write: write, read: read, apply: apply, reset: reset, readLocal: readLocal };
+    return {
+      write: write, writeOnExit: writeOnExit, read: read, apply: apply,
+      reset: reset, readLocal: readLocal, migrate: migrate, sanitize: sanitize
+    };
   })();
   Svc.set('save', save);
 
@@ -1623,15 +1725,16 @@
      15. 启动
      ========================================================= */
   async function boot() {
+    const saveSvc = Svc.get('save');
     let saved = null;
     try {
-      saved = await Svc.get('save').read();
+      saved = await saveSvc.read();
     } catch (e) {
-      saved = Svc.get('save').readLocal();
+      saved = saveSvc.readLocal();
     }
 
     if (saved) {
-      Svc.get('save').apply(saved);
+      saveSvc.apply(saved);
       applyOffline(saved);
     } else {
       state.hero.hp = derive.maxHp();
@@ -1644,11 +1747,24 @@
 
     Svc.get('combat').spawnEnemy();
 
-    setInterval(() => Svc.get('save').write(), 5000);
-    window.addEventListener('beforeunload', () => Svc.get('save').write());
+    // 若本地档比服务端新（例如服务宕机期间玩过），立即回写对齐两端
+    if (state.saveSource === 'local-newer' || state.saveSource === 'local') {
+      saveSvc.write();
+    }
+
+    /* —— 自动保存：定时 + 重要节点 + 关页 —— */
+    setInterval(() => saveSvc.write(), 5000);
+
+    // 关键进度立刻落盘，避免"刚升级就崩溃"丢档
+    bus.on('hero:levelup', () => saveSvc.write());
+    bus.on('skill:bought', () => saveSvc.write());
+    bus.on('stage:change', () => saveSvc.write());
+
+    window.addEventListener('pagehide', () => saveSvc.writeOnExit());
+    window.addEventListener('beforeunload', () => saveSvc.writeOnExit());
     window.addEventListener('resize', () => Svc.get('render').fit());
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'hidden') Svc.get('save').write();
+      if (document.visibilityState === 'hidden') saveSvc.writeOnExit();
     });
 
     const cv = Svc.get('render').canvas;
