@@ -4,6 +4,8 @@
 
 纯 HTML5 Canvas 实现，前端零依赖；后端仅用 Node 内置模块，无数据库。
 
+[MIT License](LICENSE) · 仓库：https://github.com/cancan315/PixelIdle
+
 ## 玩法
 
 - 英雄自动攻击敌人，敌人自动反击，全程无需操作
@@ -316,3 +318,9 @@ PixelIdle/
 ls -l /var/apps/PixelIdle/target/app.sock   # socket 是否已创建
 cat /vol1/@appdata/PixelIdle/app.log        # 服务是否报错
 ```
+
+## License
+
+本项目采用 [MIT License](LICENSE) 授权。
+
+Copyright (c) 2026 cancan315
