@@ -1,0 +1,15 @@
+{
+  "name": "pixelidle",
+  "private": true,
+  "description": "像素风放置挂机游戏，为飞牛 fnOS 应用中心开发",
+  "license": "MIT",
+  "comment": "版本号以 manifest 为唯一来源，此处不重复声明，避免 release.sh 升版本后出现两份不一致的版本号。该文件只用于构建期工具（esbuild），不参与 .fpk 打包。",
+  "scripts": {
+    "fx": "node scripts/build-fx.js",
+    "build": "node scripts/build-fx.js && node scripts/build-web.js",
+    "dev": "./scripts/dev.sh"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}

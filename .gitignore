@@ -6,6 +6,9 @@ dist/
 .devdata/
 node_modules/
 
+# 本地验证产物
+.fx-*.png
+
 # 运行时数据（不应进版本库）
 save-*.json
 *.log

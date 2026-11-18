@@ -9,9 +9,15 @@
 ## 玩法
 
 - 英雄自动攻击敌人，敌人自动反击，全程无需操作
+- **御剑攻击**：英雄掷出飞剑，剑飞到敌人身上才结算伤害（命中瞬间触发暴击闪光、火花与顿帧）
 - 击杀获得经验与金币，升级提升属性
-- 每击杀 10 只敌人进入下一关，敌人属性按 1.55 倍逐层增长
+- 每个关卡 10 只敌人：前 5 普通、6–9 精英、10 首领；打完首领并达到等级要求才进入下一关
+- **关卡门槛**：普通怪需四槽稀有、精英需传说、首领需传说且强化 +10（不达标自动退回上一关刷取）
+- **强化系统**：强化石按关卡等级掉落，每级 3 颗、每级 +6%，上限 +10
 - 5 种技能可提升：攻击力、最大生命、攻速、暴击率、生命回复
+- **装备系统**：4 槽位 / 3 品质（普通·稀有·传说）/ 自动装备；按怪物种类固定掉落，实测增益 +24%~+45%
+- **敌人变体**：第 7 关起出现「精英 / 腐化」变体，配色不同、属性更强、金色或绿色描边
+- **关卡背景**：每个关卡背景都不一样，按本关怪物种类生成（沼泽 / 洞窟 / 墓园 / 熔岩）
 - 存档双写：localStorage + 服务端，支持多端同步；进度按手机/电脑等设备共享
 - 离线收益上限 8 小时
 
@@ -75,12 +81,144 @@ sudo ./scripts/sync.sh
 
 ```
 src/            开发源码（可读，带 game.js 独立文件）
-  index.html    <script src="game.js">
+  index.html    按顺序引入下面两个脚本
   game.js       游戏逻辑
+  vendor/
+    pixelfx.fx.js   pixelfx 特效包（由 scripts/build-fx.js 生成，勿手改）
+vendor/pixelfx/ pixelfx 源码子集（MIT，见 THIRD-PARTY-NOTICES.md）
 app/www/        构建产物（单文件，由 scripts/build-web.js 生成，勿手改）
 ```
 
-`src/` 只用于开发，不进 `.fpk`；打包时内联成 `app/www/index.html`。
+`src/` 只用于开发，不进 `.fpk`；打包时按 `index.html` 里的顺序内联成 `app/www/index.html`。
+顺序不能乱：`pixelfx.fx.js` 定义的 `PixelFX` 必须先于 `game.js` 出现。
+
+### 特效系统（pixelfx）
+
+命中特效来自 [patch-gg/pixelfx](https://github.com/patch-gg/pixelfx)（MIT）。
+它是 ES Module，而本项目是单文件零依赖，所以多了一层构建：
+
+```
+vendor/pixelfx/  --esbuild-->  src/vendor/pixelfx.fx.js  --内联-->  app/www/index.html
+```
+
+```bash
+node scripts/build-fx.js     # 改了 vendor/ 或入口清单后要跑
+node scripts/build-web.js    # 内联成单文件
+npm run build                # 两步一起
+```
+
+`scripts/release.sh` 已包含这两步，正常发版不用手动跑。
+
+想加新特效：编辑 `vendor/pixelfx/entry.js` 增加 import/export，再跑一遍构建。
+每个特效约增加 2~6 KB（压缩后），核心部分是一次性成本（约 19 KB）。
+没有被 `entry.js` 引用的特效不会进产物。
+
+游戏侧通过 `Svc.get('film')` 使用，它是一个独立图层：
+
+```js
+Svc.get('film').hit(x, y, crit)        // 命中特效
+Svc.get('film').play(mod, x, y, opts)  // 播任意已打包的特效
+```
+
+用独立离屏 canvas 而不是直接画在舞台上，是为了不动 `render` 的绘制模型。
+若 `pixelfx.fx.js` 缺失，`film` 会安静降级为零特效，游戏照常运行。
+
+> 关卡与强化规则见 [docs/STAGE-DESIGN.md](docs/STAGE-DESIGN.md)。
+
+> 升级上游：`./scripts/vendor-pixelfx.sh [git URL 或本地路径]`，
+> 它会重新拉取被引用的文件并逐字节校验。除 `core/index.js`（有意裁剪过）外，
+> vendor 下的文件应与上游完全一致。
+
+### 美术资源（零图片文件）
+
+游戏画面里没有任何 `.png` / `.jpg`，全部由代码生成或还原：
+
+| 类别 | 做法 |
+| --- | --- |
+| 精灵（主角/敌人/飞剑） | 手绘像素写成 ASCII 字母矩阵 + 调色板表，运行时查表转成 `ImageData` → 离屏 canvas |
+| 关卡背景 | CPU 2D 程序化：按怪物种类选主题 + 按关卡号做差异（见下） |
+| 特效 | pixelfx 粒子模拟（见上） |
+
+精灵示例（`SPRITES`）：
+
+```js
+skeleton: {
+  pal: { s: '#e8e6d8', d: '#a8a597', e: '#ff5b5b', k: '#2a2a35' },
+  art: ['...ssss...', '..ssssss..', '..sessse..', ...]
+}
+```
+
+**注意**：像素的颜色是**人写死的**，代码只负责查表。这和「程序化噪声生成贴图」是两回事——
+像素风的可读性恰恰来自每个像素都被刻意放置。
+
+#### 关卡背景
+
+**每 10 个敌人一关**（`TUNE.stage.enemiesPerStage = 10`）。每关的背景不同，
+由两层决定：
+
+1. **主题**：`TUNE.themes` 按本关出现的**怪物种类**选配色与装饰
+
+   | 怪物 | 主题 | 装饰 |
+   | --- | --- | --- |
+   | slime | 沼泽 | 远景树、水洼、上浮孢子 |
+   | bat | 洞窟 | 钟乳石岩顶、石笋、发光水晶 |
+   | skeleton | 墓园 | 月亮、墓碑、枯树、低空雾 |
+   | golem | 熔岩 | 岩脊、地面裂缝、上升火星、岩浆脉动 |
+
+2. **关卡种子**：`stage` 作为随机种子，抖动山体数量/振幅/明度、星星位置、
+   装饰位置数量 —— 所以同为沼泽的第 1 关和第 7 关看起来也不一样。
+
+实现上分两半：
+
+- **静态部分**烘焙成一张 320×180 的离屏 canvas，只在**换关**时重建
+- **动态部分**（孢子/火星/雾/水晶脉动/星光）每帧叠加，≤ 26 个点
+
+这样背景不占逐帧开销：整帧渲染 **0.21 ms**（含换关时重建背景）。
+
+#### 调色板皮肤（敌人变体）
+
+`SKINS` 给同一份 `art` 换一套 `pal`，就是新变体，**零新增像素、零体积增长**：
+
+```js
+SKINS.golem = {
+  elite:     { g: '#b8a8ff', d: '#6b5f9a', c: '#ffd23c' },   // 金边紫岩
+  corrupted: { g: '#7a6a52', d: '#4a3f2e', c: '#8dff5a' }    // 绿边腐岩
+};
+```
+
+变体由 `TUNE.variants` 控制，在 `tier >= 1`（第 7 关起）按关卡号**确定性**出现：
+
+```js
+TUNE.variants.elite = { skin:'elite', label:'精英',
+  hpMul:1.8, atkMul:1.35, goldMul:2.4, xpMul:1.9, every:11, at:4 };
+```
+
+变体除了配色，还在精灵外圈描一圈变体色轮廓光（`SKIN_OUTLINE`），
+一眼就能分辨「这只不一样」——不用文字，因为 7px 的中文看不清。
+
+#### 损伤贴花
+
+敌人血量降到 75% / 50% / 25% 三档时，叠加一层预先算好的硬边损伤图：
+
+- **掉块**：轮廓边缘的 2×2 块以较高概率被打成近黑，越靠边越先崩
+- **污渍**：整块压暗，保留色相
+
+三条经验都踩过坑：
+
+1. 必须**按 2×2 块**判定，不能逐像素——方块状精灵的边是一整列，逐像素会啃出一条条竖直暗带
+2. 密度必须低，10×12 的精灵塞满噪点就糊成脏污
+3. 损伤图在**构建期算好**（用确定性哈希，不随机），否则每帧重算会闪
+
+#### 缓存
+
+`spriteCache` 的 key 是 `name::skin`（`spriteKey()`）。**不含皮肤的 key 会导致换表不生效**——
+这是做变体时最容易漏的一处。
+
+实测：建全部缓存 + 首帧 11 ms，渲染 0.474 ms/帧（320×180，含背景/轮廓光/损伤/特效层）。
+
+> 这套「同配方出多变体」的思路参考了 [Saltline](https://github.com/) 的程序化材质系统
+> （一个 `surf()` 配方配不同 `seed` 出无数张贴图）。但 PixelIdle 的美术是手绘数据，
+> 形状改不了，所以只取了「调色板这一层」——形状变体仍需要重画字母矩阵。
 
 ### 确认版本是否生效
 
@@ -289,20 +427,27 @@ idle → windup(0.42~0.62s, 红色脉动光环 + 发光爬升) → strike → re
 ```
 PixelIdle/
 ├── manifest              # 版本号、依赖 nodejs_v22
+├── THIRD-PARTY-NOTICES.md # 第三方代码声明（随 .fpk 一起发布）
 ├── src/                  # 开发源码（不进 .fpk）
 │   ├── index.html
-│   └── game.js
+│   ├── game.js
+│   └── vendor/pixelfx.fx.js  # pixelfx 特效包（生成物）
+├── vendor/pixelfx/       # pixelfx 源码子集（MIT）
 ├── scripts/
 │   ├── dev.sh            # 开发服务器（热更新）
 │   ├── sync.sh           # 同步到已安装应用（需 root）
 │   ├── release.sh        # 升版本 + 打包 + 打标签
-│   └── build-web.js      # src/ 内联为 app/www/index.html
+│   ├── build-fx.js       # vendor/ 编译为 src/vendor/pixelfx.fx.js
+│   ├── calibrate-gear.js # 装备增益 + 关卡击杀时长校准
+│   ├── build-web.js      # src/ 内联为 app/www/index.html
+│   └── vendor-pixelfx.sh # 重新拉取 / 校验 vendor 源码
 ├── app/
 │   ├── server/server.js  # 网关后端（零依赖）
 │   ├── ui/
 │   │   ├── config        # gatewayPrefix + gatewaySocket
 │   │   └── images/
-│   └── www/index.html    # 构建产物（勿手改）
+│   ├── www/index.html    # 构建产物（勿手改）
+│   └── THIRD-PARTY-NOTICES.md  # 由 release.sh 从根目录同步，勿手改
 ├── cmd/                  # 生命周期脚本（含升级备份）
 └── config/               # privilege / resource
 ```
@@ -324,3 +469,7 @@ cat /vol1/@appdata/PixelIdle/app.log        # 服务是否报错
 本项目采用 [MIT License](LICENSE) 授权。
 
 Copyright (c) 2026 cancan315
+
+本项目包含来自 [patch-gg/pixelfx](https://github.com/patch-gg/pixelfx) 的代码
+（MIT，Copyright (c) 2026 Patch 与 Hugo Duprez），详见
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。

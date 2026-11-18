@@ -47,14 +47,27 @@ open(path, 'w', encoding='utf-8').write(s)
 print('manifest 已更新')
 PY
 
+# 编译 pixelfx 特效包（vendor/ -> src/vendor/pixelfx.fx.js）
+# 顺序不能反：build-web 会内联这个产物，缺失就直接报错退出。
+echo "编译特效包…"
+node "${ROOT}/scripts/build-fx.js" || { echo "特效包编译失败（是否缺 esbuild？npm i -D esbuild）"; exit 1; }
+
 # 内联前端：src/ -> app/www/index.html
 echo "内联前端…"
 node "${ROOT}/scripts/build-web.js" || { echo "前端构建失败"; exit 1; }
 
+# 第三方声明必须随包发布：MIT 要求版权声明随副本保留，而特效横幅里指向的
+# 就是这份文件，装到设备上若找不到就是死引用。
+# fnpack 只收 app/ 下的内容，所以在这里同步一份，别手改 app/ 里的副本。
+if [ -f "${ROOT}/THIRD-PARTY-NOTICES.md" ]; then
+  cp "${ROOT}/THIRD-PARTY-NOTICES.md" "${ROOT}/app/THIRD-PARTY-NOTICES.md"
+fi
+
 # 统一权限（避免再次出现 600/711 这类问题）
 chmod 755 app/server/server.js cmd/* scripts/*.sh 2>/dev/null
 chmod 644 app/www/* manifest app/ui/config app/ui/images/*.png ICON*.PNG \
-         app/server/server.js config/privilege config/resource README.md 2>/dev/null
+         app/server/server.js config/privilege config/resource README.md LICENSE \
+         app/THIRD-PARTY-NOTICES.md THIRD-PARTY-NOTICES.md 2>/dev/null
 chmod 755 app app/ui app/www app/ui/images app/server config cmd wizard scripts 2>/dev/null
 
 # 打包
