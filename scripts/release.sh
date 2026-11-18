@@ -64,9 +64,11 @@ if [ -f "${ROOT}/THIRD-PARTY-NOTICES.md" ]; then
 fi
 
 # 统一权限（避免再次出现 600/711 这类问题）
+# 注意：这两条清单不能重叠。server.js 曾被同时列在 755 和 644 里，
+# 后一条覆盖前一条，导致包内权限是 644 —— 虽不影响 node 运行，但会误导排查。
 chmod 755 app/server/server.js cmd/* scripts/*.sh 2>/dev/null
 chmod 644 app/www/* manifest app/ui/config app/ui/images/*.png ICON*.PNG \
-         app/server/server.js config/privilege config/resource README.md LICENSE \
+         config/privilege config/resource README.md LICENSE \
          app/THIRD-PARTY-NOTICES.md THIRD-PARTY-NOTICES.md 2>/dev/null
 chmod 755 app app/ui app/www app/ui/images app/server config cmd wizard scripts 2>/dev/null
 
